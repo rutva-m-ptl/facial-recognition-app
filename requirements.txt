@@ -3,6 +3,6 @@ opencv-python-headless
 pillow
 numpy<2.0.0
 scikit-learn
-chromadb==0.4.24
-tensorflow-cpu==2.15.0
-deepface==0.0.89
+chromadb-client==0.4.25.post1
+tf-keras==2.15.0
+deepface==0.0.92
