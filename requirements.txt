@@ -3,6 +3,7 @@ deepface
 chromadb
 opencv-python-headless
 pillow
-numpy
+numpy<2.0.0
 scikit-learn
 tf-keras
+tf-keras-nightly
