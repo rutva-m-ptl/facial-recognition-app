@@ -5,4 +5,5 @@ numpy<2.0.0
 scikit-learn
 chromadb-client==0.4.25.post1
 tf-keras==2.15.0
-deepface==0.0.92
+tf-keras-nightly
+deepface==0.0.89
