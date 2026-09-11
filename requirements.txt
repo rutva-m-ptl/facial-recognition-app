@@ -5,3 +5,5 @@ pillow
 scikit-learn
 deepface
 tf-keras
+tf-keras-vis
+tensorflow-cpu
