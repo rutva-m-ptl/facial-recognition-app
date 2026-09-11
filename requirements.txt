@@ -1,7 +1,8 @@
 streamlit
 opencv-python-headless
-mediapipe
-numpy
+dlib-bin
+face_recognition @ git+https://github.com/thetoby9944/face_recognition
 chromadb
 scikit-learn
 Pillow
+numpy
