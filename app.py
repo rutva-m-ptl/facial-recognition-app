@@ -6,7 +6,6 @@ import streamlit as st
 import chromadb
 import cv2
 from PIL import Image
-import mediapipe as mp
 from sklearn.cluster import DBSCAN, KMeans
 
 # --- Page Configuration ---
@@ -15,9 +14,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Initialize MediaPipe Face Detection ---
-mp_face_detection = mp.solutions.face_detection
-mp_drawing = mp.solutions.drawing_utils
+# --- Initialize OpenCV Haar Cascade Classifier ---
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 # --- Initialize ChromaDB Vector Store ---
 CHROMA_DATA_PATH = "chroma_db"
@@ -75,42 +73,37 @@ uploaded_files = st.sidebar.file_uploader(
 
 threshold = st.sidebar.slider("Match Distance Threshold", 0.10, 0.80, 0.40, 0.05)
 
-# --- Lightweight Feature Extractor (OpenCV / MediaPipe) ---
+# --- Feature Extractor Engine ---
 def convert_to_rgb(img_file):
     return Image.open(img_file).convert("RGB")
 
 def extract_face_embedding_and_bbox(img_np):
-    """Detects face and generates embedding using normalized facial spatial crop."""
-    h, w, _ = img_np.shape
-    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
-        results = face_detection.process(img_np)
-        
-        if not results.detections:
-            return []
+    """Detects faces using OpenCV Haar Cascades and extracts normalized feature vectors."""
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    faces = face_cascade.detectMultiScale(
+        gray, 
+        scaleFactor=1.1, 
+        minNeighbors=5, 
+        minSize=(30, 30)
+    )
 
-        extracted_faces = []
-        for det in results.detections:
-            bbox = det.location_data.relative_bounding_box
-            left = int(max(0, bbox.xmin * w))
-            top = int(max(0, bbox.ymin * h))
-            right = int(min(w, (bbox.xmin + bbox.width) * w))
-            bottom = int(min(h, (bbox.ymin + bbox.height) * h))
+    extracted_faces = []
+    for (x, y, w, h) in faces:
+        face_crop = img_np[y:y+h, x:x+w]
+        if face_crop.size == 0:
+            continue
 
-            face_crop = img_np[top:bottom, left:right]
-            if face_crop.size == 0:
-                continue
+        # Resize cropped region to 64x64 vector array
+        resized = cv2.resize(face_crop, (64, 64))
+        embedding = resized.flatten().astype(np.float32)
+        embedding /= (np.linalg.norm(embedding) + 1e-6)
 
-            # Resize to 64x64 fixed vector representation (Lightweight embedding generation)
-            resized = cv2.resize(face_crop, (64, 64))
-            embedding = resized.flatten().astype(np.float32)
-            embedding /= (np.linalg.norm(embedding) + 1e-6)
+        extracted_faces.append({
+            "embedding": embedding.tolist(),
+            "bbox": {"top": int(y), "right": int(x + w), "bottom": int(y + h), "left": int(x)}
+        })
 
-            extracted_faces.append({
-                "embedding": embedding.tolist(),
-                "bbox": {"top": top, "right": right, "bottom": bottom, "left": left}
-            })
-
-        return extracted_faces
+    return extracted_faces
 
 def draw_bounding_box_and_crop(pil_img, facial_area, label="Match"):
     cv_img = np.array(pil_img)
