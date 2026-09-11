@@ -21,10 +21,13 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 CHROMA_DATA_PATH = "chroma_db"
 chroma_client = chromadb.PersistentClient(path=CHROMA_DATA_PATH)
 
-collection = chroma_client.get_or_create_collection(
-    name="gallery_faces_analytics",
-    metadata={"hnsw:space": "cosine"}
-)
+def get_collection():
+    return chroma_client.get_or_create_collection(
+        name="gallery_faces_analytics",
+        metadata={"hnsw:space": "cosine"}
+    )
+
+collection = get_collection()
 
 # --- Styling & Layout ---
 st.markdown("""
@@ -78,7 +81,7 @@ def convert_to_rgb(img_file):
     return Image.open(img_file).convert("RGB")
 
 def extract_face_embedding_and_bbox(img_np):
-    """Detects faces using OpenCV Haar Cascades and extracts normalized feature vectors."""
+    """Detects faces using OpenCV Haar Cascades and extracts 1024-dim normalized grayscale feature vectors."""
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
     faces = face_cascade.detectMultiScale(
         gray, 
@@ -89,12 +92,12 @@ def extract_face_embedding_and_bbox(img_np):
 
     extracted_faces = []
     for (x, y, w, h) in faces:
-        face_crop = img_np[y:y+h, x:x+w]
+        face_crop = gray[y:y+h, x:x+w]
         if face_crop.size == 0:
             continue
 
-        # Resize cropped region to 64x64 vector array
-        resized = cv2.resize(face_crop, (64, 64))
+        # Resize cropped region to 32x32 grayscale array (1024 dimensions)
+        resized = cv2.resize(face_crop, (32, 32))
         embedding = resized.flatten().astype(np.float32)
         embedding /= (np.linalg.norm(embedding) + 1e-6)
 
@@ -154,19 +157,39 @@ if uploaded_files:
                 for face_idx, face_data in enumerate(faces):
                     unique_id = f"{file.name}_face_{face_idx}"
 
-                    collection.upsert(
-                        ids=[unique_id],
-                        embeddings=[face_data["embedding"]],
-                        metadatas=[{
-                            "file_name": file.name,
-                            "face_idx": face_idx,
-                            "top": face_data["bbox"]["top"],
-                            "right": face_data["bbox"]["right"],
-                            "bottom": face_data["bbox"]["bottom"],
-                            "left": face_data["bbox"]["left"]
-                        }]
-                    )
-                    indexed_count += 1
+                    try:
+                        collection.upsert(
+                            ids=[unique_id],
+                            embeddings=[face_data["embedding"]],
+                            metadatas=[{
+                                "file_name": file.name,
+                                "face_idx": face_idx,
+                                "top": face_data["bbox"]["top"],
+                                "right": face_data["bbox"]["right"],
+                                "bottom": face_data["bbox"]["bottom"],
+                                "left": face_data["bbox"]["left"]
+                            }]
+                        )
+                        indexed_count += 1
+                    except Exception as e:
+                        if "dimension" in str(e).lower():
+                            chroma_client.delete_collection("gallery_faces_analytics")
+                            collection = get_collection()
+                            collection.upsert(
+                                ids=[unique_id],
+                                embeddings=[face_data["embedding"]],
+                                metadatas=[{
+                                    "file_name": file.name,
+                                    "face_idx": face_idx,
+                                    "top": face_data["bbox"]["top"],
+                                    "right": face_data["bbox"]["right"],
+                                    "bottom": face_data["bbox"]["bottom"],
+                                    "left": face_data["bbox"]["left"]
+                                }]
+                            )
+                            indexed_count += 1
+                        else:
+                            raise e
 
             except Exception as e:
                 st.error(f"Execution failure on file {file.name}: {str(e)}")
