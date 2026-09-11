@@ -1,6 +1,7 @@
 import os
 import io
 import zipfile
+import tempfile
 import numpy as np
 import streamlit as st
 import chromadb
@@ -17,9 +18,13 @@ st.set_page_config(
 # --- Initialize OpenCV Haar Cascade Classifier ---
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-# --- Initialize ChromaDB Vector Store ---
-CHROMA_DATA_PATH = "chroma_db"
-chroma_client = chromadb.PersistentClient(path=CHROMA_DATA_PATH)
+# --- Initialize ChromaDB in Writable Temporary Directory ---
+CHROMA_DATA_PATH = os.path.join(tempfile.gettempdir(), "chroma_db")
+
+def get_chroma_client():
+    return chromadb.PersistentClient(path=CHROMA_DATA_PATH)
+
+chroma_client = get_chroma_client()
 
 def get_collection():
     return chroma_client.get_or_create_collection(
@@ -81,7 +86,7 @@ def convert_to_rgb(img_file):
     return Image.open(img_file).convert("RGB")
 
 def extract_face_embedding_and_bbox(img_np):
-    """Detects faces using OpenCV Haar Cascades and extracts 1024-dim normalized grayscale feature vectors."""
+    """Detects faces using OpenCV Haar Cascades and extracts normalized feature vectors."""
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
     faces = face_cascade.detectMultiScale(
         gray, 
@@ -96,7 +101,6 @@ def extract_face_embedding_and_bbox(img_np):
         if face_crop.size == 0:
             continue
 
-        # Resize cropped region to 32x32 grayscale array (1024 dimensions)
         resized = cv2.resize(face_crop, (32, 32))
         embedding = resized.flatten().astype(np.float32)
         embedding /= (np.linalg.norm(embedding) + 1e-6)
@@ -171,25 +175,22 @@ if uploaded_files:
                             }]
                         )
                         indexed_count += 1
-                    except Exception as e:
-                        if "dimension" in str(e).lower():
-                            chroma_client.delete_collection("gallery_faces_analytics")
-                            collection = get_collection()
-                            collection.upsert(
-                                ids=[unique_id],
-                                embeddings=[face_data["embedding"]],
-                                metadatas=[{
-                                    "file_name": file.name,
-                                    "face_idx": face_idx,
-                                    "top": face_data["bbox"]["top"],
-                                    "right": face_data["bbox"]["right"],
-                                    "bottom": face_data["bbox"]["bottom"],
-                                    "left": face_data["bbox"]["left"]
-                                }]
-                            )
-                            indexed_count += 1
-                        else:
-                            raise e
+                    except Exception as inner_e:
+                        chroma_client.delete_collection("gallery_faces_analytics")
+                        collection = get_collection()
+                        collection.upsert(
+                            ids=[unique_id],
+                            embeddings=[face_data["embedding"]],
+                            metadatas=[{
+                                "file_name": file.name,
+                                "face_idx": face_idx,
+                                "top": face_data["bbox"]["top"],
+                                "right": face_data["bbox"]["right"],
+                                "bottom": face_data["bbox"]["bottom"],
+                                "left": face_data["bbox"]["left"]
+                            }]
+                        )
+                        indexed_count += 1
 
             except Exception as e:
                 st.error(f"Execution failure on file {file.name}: {str(e)}")
@@ -204,7 +205,10 @@ db_count = collection.count()
 st.sidebar.info(f"Database Index Records: {db_count}")
 
 if st.sidebar.button("Reset Vector Database", use_container_width=True):
-    chroma_client.delete_collection("gallery_faces_analytics")
+    try:
+        chroma_client.delete_collection("gallery_faces_analytics")
+    except Exception:
+        pass
     st.sidebar.warning("Database records cleared.")
     st.rerun()
 
