@@ -1,7 +1,4 @@
 streamlit
 opencv-python-headless
-pillow
-numpy<2.0.0
-scikit-learn
-face-recognition
-chromadb-client==0.4.25.post1
+dlib-bin
+face_recognition @ git+https://github.com/thetoby9944/face_recognition
