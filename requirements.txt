@@ -2,3 +2,6 @@ streamlit
 opencv-python-headless
 mediapipe
 numpy
+chromadb
+scikit-learn
+Pillow
