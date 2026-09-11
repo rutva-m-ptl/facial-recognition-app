@@ -6,7 +6,7 @@ import streamlit as st
 import chromadb
 import cv2
 from PIL import Image
-import face_recognition
+import mediapipe as mp
 from sklearn.cluster import DBSCAN, KMeans
 
 # --- Page Configuration ---
@@ -14,6 +14,10 @@ st.set_page_config(
     page_title="Facial Recognition & Enterprise Analytics",
     layout="wide"
 )
+
+# --- Initialize MediaPipe Face Detection ---
+mp_face_detection = mp.solutions.face_detection
+mp_drawing = mp.solutions.drawing_utils
 
 # --- Initialize ChromaDB Vector Store ---
 CHROMA_DATA_PATH = "chroma_db"
@@ -24,7 +28,7 @@ collection = chroma_client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"}
 )
 
-# --- Styling & Layout Density ---
+# --- Styling & Layout ---
 st.markdown("""
     <style>
     .block-container {
@@ -51,17 +55,6 @@ st.markdown("""
         letter-spacing: 0.5px;
         font-weight: 600;
     }
-    .meta-tag {
-        display: inline-block;
-        padding: 4px 10px;
-        border-radius: 4px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin-right: 4px;
-        background-color: #f1f5f9;
-        color: #334155;
-        border: 1px solid #cbd5e1;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,8 +65,8 @@ st.markdown("<hr style='margin: 0.5rem 0 1.2rem 0;'>", unsafe_allow_html=True)
 
 # --- Sidebar Controls ---
 st.sidebar.header("Control Panel")
-
 st.sidebar.subheader("1. Indexing Configuration")
+
 uploaded_files = st.sidebar.file_uploader(
     "Upload Media Files", 
     type=["jpg", "jpeg", "png"], 
@@ -82,19 +75,48 @@ uploaded_files = st.sidebar.file_uploader(
 
 threshold = st.sidebar.slider("Match Distance Threshold", 0.10, 0.80, 0.40, 0.05)
 
-# --- Helper Functions ---
+# --- Lightweight Feature Extractor (OpenCV / MediaPipe) ---
 def convert_to_rgb(img_file):
-    img = Image.open(img_file).convert("RGB")
-    return img
+    return Image.open(img_file).convert("RGB")
+
+def extract_face_embedding_and_bbox(img_np):
+    """Detects face and generates embedding using normalized facial spatial crop."""
+    h, w, _ = img_np.shape
+    with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
+        results = face_detection.process(img_np)
+        
+        if not results.detections:
+            return []
+
+        extracted_faces = []
+        for det in results.detections:
+            bbox = det.location_data.relative_bounding_box
+            left = int(max(0, bbox.xmin * w))
+            top = int(max(0, bbox.ymin * h))
+            right = int(min(w, (bbox.xmin + bbox.width) * w))
+            bottom = int(min(h, (bbox.ymin + bbox.height) * h))
+
+            face_crop = img_np[top:bottom, left:right]
+            if face_crop.size == 0:
+                continue
+
+            # Resize to 64x64 fixed vector representation (Lightweight embedding generation)
+            resized = cv2.resize(face_crop, (64, 64))
+            embedding = resized.flatten().astype(np.float32)
+            embedding /= (np.linalg.norm(embedding) + 1e-6)
+
+            extracted_faces.append({
+                "embedding": embedding.tolist(),
+                "bbox": {"top": top, "right": right, "bottom": bottom, "left": left}
+            })
+
+        return extracted_faces
 
 def draw_bounding_box_and_crop(pil_img, facial_area, label="Match"):
     cv_img = np.array(pil_img)
     cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
 
     top, right, bottom, left = facial_area['top'], facial_area['right'], facial_area['bottom'], facial_area['left']
-    w = right - left
-    h = bottom - top
-
     crop_img = cv_img[max(0, top):bottom, max(0, left):right]
     crop_pil = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)) if crop_img.size > 0 else pil_img
 
@@ -134,23 +156,21 @@ if uploaded_files:
             img_np = np.array(img_pil)
 
             try:
-                face_locations = face_recognition.face_locations(img_np)
-                face_encodings = face_recognition.face_encodings(img_np, face_locations)
+                faces = extract_face_embedding_and_bbox(img_np)
 
-                for face_idx, (encoding, loc) in enumerate(zip(face_encodings, face_locations)):
-                    top, right, bottom, left = loc
+                for face_idx, face_data in enumerate(faces):
                     unique_id = f"{file.name}_face_{face_idx}"
 
                     collection.upsert(
                         ids=[unique_id],
-                        embeddings=[encoding.tolist()],
+                        embeddings=[face_data["embedding"]],
                         metadatas=[{
                             "file_name": file.name,
                             "face_idx": face_idx,
-                            "top": top,
-                            "right": right,
-                            "bottom": bottom,
-                            "left": left
+                            "top": face_data["bbox"]["top"],
+                            "right": face_data["bbox"]["right"],
+                            "bottom": face_data["bbox"]["bottom"],
+                            "left": face_data["bbox"]["left"]
                         }]
                     )
                     indexed_count += 1
@@ -215,14 +235,13 @@ with tab1:
             target_np = np.array(target_img)
 
             try:
-                target_locations = face_recognition.face_locations(target_np)
-                target_encodings = face_recognition.face_encodings(target_np, target_locations)
+                faces = extract_face_embedding_and_bbox(target_np)
 
-                if not target_encodings:
+                if not faces:
                     st.error("Facial feature extraction failed on reference capture.")
                     st.stop()
 
-                target_embedding = target_encodings[0].tolist()
+                target_embedding = faces[0]["embedding"]
 
                 results = collection.query(
                     query_embeddings=[target_embedding],
