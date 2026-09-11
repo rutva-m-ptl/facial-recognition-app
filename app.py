@@ -6,7 +6,7 @@ import streamlit as st
 import chromadb
 import cv2
 from PIL import Image
-from deepface import DeepFace
+import face_recognition
 from sklearn.cluster import DBSCAN, KMeans
 
 # --- Page Configuration ---
@@ -80,39 +80,7 @@ uploaded_files = st.sidebar.file_uploader(
     accept_multiple_files=True
 )
 
-detector_backend = st.sidebar.selectbox(
-    "Detection Engine",
-    ["retinaface", "mtcnn", "opencv"],
-    index=0
-)
-
-age_calibration = st.sidebar.number_input(
-    "Age Adjustment Offset (Years)", 
-    min_value=-25, 
-    max_value=25, 
-    value=-5, 
-    help="Offset adjustment to normalize neural network age estimation output."
-)
-
 threshold = st.sidebar.slider("Match Distance Threshold", 0.10, 0.80, 0.40, 0.05)
-
-st.sidebar.subheader("2. Search Filters")
-filter_emotion = st.sidebar.selectbox(
-    "Emotion Filter",
-    ["All", "happy", "neutral", "sad", "surprise", "fear", "angry", "disgust"]
-)
-
-filter_gender = st.sidebar.selectbox(
-    "Gender Filter",
-    ["All", "Man", "Woman"]
-)
-
-age_range = st.sidebar.slider(
-    "Age Range",
-    min_value=1,
-    max_value=100,
-    value=(10, 80)
-)
 
 # --- Helper Functions ---
 def convert_to_rgb(img_file):
@@ -123,13 +91,15 @@ def draw_bounding_box_and_crop(pil_img, facial_area, label="Match"):
     cv_img = np.array(pil_img)
     cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
 
-    x, y, w, h = facial_area['x'], facial_area['y'], facial_area['w'], facial_area['h']
+    top, right, bottom, left = facial_area['top'], facial_area['right'], facial_area['bottom'], facial_area['left']
+    w = right - left
+    h = bottom - top
 
-    crop_img = cv_img[max(0, y):y+h, max(0, x):x+w]
+    crop_img = cv_img[max(0, top):bottom, max(0, left):right]
     crop_pil = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)) if crop_img.size > 0 else pil_img
 
-    cv2.rectangle(cv_img, (x, y), (x + w, y + h), (2, 132, 199), 2)
-    cv2.putText(cv_img, label, (x, max(15, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (2, 132, 199), 2)
+    cv2.rectangle(cv_img, (left, top), (right, bottom), (2, 132, 199), 2)
+    cv2.putText(cv_img, label, (left, max(15, top - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (2, 132, 199), 2)
 
     annotated_pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
     return annotated_pil, crop_pil
@@ -160,63 +130,33 @@ if uploaded_files:
         for idx, file in enumerate(uploaded_files):
             status_text.text(f"Processing ({idx+1}/{len(uploaded_files)}): {file.name}")
             
-            temp_path = f"temp_{idx}.jpg"
-            img = convert_to_rgb(file)
-            img.save(temp_path, quality=95)
+            img_pil = convert_to_rgb(file)
+            img_np = np.array(img_pil)
 
             try:
-                analysis_results = DeepFace.analyze(
-                    img_path=temp_path,
-                    actions=['age', 'gender', 'emotion'],
-                    detector_backend=detector_backend,
-                    enforce_detection=False
-                )
+                face_locations = face_recognition.face_locations(img_np)
+                face_encodings = face_recognition.face_encodings(img_np, face_locations)
 
-                if isinstance(analysis_results, dict):
-                    analysis_results = [analysis_results]
-
-                objs = DeepFace.represent(
-                    img_path=temp_path,
-                    model_name="Facenet",
-                    detector_backend=detector_backend,
-                    enforce_detection=False
-                )
-
-                for face_idx, obj in enumerate(objs):
-                    embedding = obj["embedding"]
-                    facial_area = obj.get("facial_area", {'x': 0, 'y': 0, 'w': 100, 'h': 100})
+                for face_idx, (encoding, loc) in enumerate(zip(face_encodings, face_locations)):
+                    top, right, bottom, left = loc
                     unique_id = f"{file.name}_face_{face_idx}"
-
-                    attr = analysis_results[face_idx] if face_idx < len(analysis_results) else {}
-
-                    raw_age = int(attr.get("age", 25))
-                    adjusted_age = max(1, raw_age + age_calibration)
-                    
-                    gender = str(attr.get("dominant_gender", "Unknown"))
-                    emotion = str(attr.get("dominant_emotion", "neutral"))
 
                     collection.upsert(
                         ids=[unique_id],
-                        embeddings=[embedding],
+                        embeddings=[encoding.tolist()],
                         metadatas=[{
                             "file_name": file.name,
                             "face_idx": face_idx,
-                            "age": adjusted_age,
-                            "gender": gender,
-                            "emotion": emotion,
-                            "x": facial_area['x'],
-                            "y": facial_area['y'],
-                            "w": facial_area['w'],
-                            "h": facial_area['h']
+                            "top": top,
+                            "right": right,
+                            "bottom": bottom,
+                            "left": left
                         }]
                     )
                     indexed_count += 1
 
             except Exception as e:
                 st.error(f"Execution failure on file {file.name}: {str(e)}")
-
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
 
             progress_bar.progress((idx + 1) / len(uploaded_files))
 
@@ -245,7 +185,6 @@ with tab1:
         with st.container(border=True):
             st.subheader("Reference Input")
             
-            # Check if image is stored in persistent state
             if "captured_image_bytes" in st.session_state and st.session_state["captured_image_bytes"] is not None:
                 st.image(st.session_state["captured_image_bytes"], caption="Active Captured Reference", use_column_width=True)
                 if st.button("Take New Photo", use_container_width=True):
@@ -271,36 +210,19 @@ with tab1:
 
     if has_photo and (start_search or "last_search_results" in st.session_state):
         if start_search:
-            temp_target = "temp_target.jpg"
             target_bytes = io.BytesIO(st.session_state["captured_image_bytes"])
             target_img = convert_to_rgb(target_bytes)
-            target_img.save(temp_target, quality=95)
+            target_np = np.array(target_img)
 
             try:
-                target_objs = DeepFace.represent(
-                    img_path=temp_target,
-                    model_name="Facenet",
-                    detector_backend=detector_backend,
-                    enforce_detection=False
-                )
-                
-                target_analysis = DeepFace.analyze(
-                    img_path=temp_target,
-                    actions=['age', 'gender', 'emotion'],
-                    detector_backend=detector_backend,
-                    enforce_detection=False
-                )
+                target_locations = face_recognition.face_locations(target_np)
+                target_encodings = face_recognition.face_encodings(target_np, target_locations)
 
-                if not target_objs:
+                if not target_encodings:
                     st.error("Facial feature extraction failed on reference capture.")
                     st.stop()
 
-                target_embedding = target_objs[0]["embedding"]
-                
-                if target_analysis:
-                    t_attr = target_analysis[0] if isinstance(target_analysis, list) else target_analysis
-                    calc_target_age = max(1, int(t_attr.get('age', 25)) + age_calibration)
-                    st.session_state["profile_attr"] = f"Reference Profile Attributes | Age: {calc_target_age} | Gender: {t_attr.get('dominant_gender')} | Emotion: {t_attr.get('dominant_emotion')}"
+                target_embedding = target_encodings[0].tolist()
 
                 results = collection.query(
                     query_embeddings=[target_embedding],
@@ -316,31 +238,18 @@ with tab1:
                     for dist, meta in zip(distances, metadatas):
                         if dist <= threshold:
                             file_name = meta["file_name"]
-                            age = meta.get("age", 0)
-                            gender = meta.get("gender", "Unknown")
-                            emotion = meta.get("emotion", "neutral")
                             facial_area = {
-                                'x': meta.get('x', 0),
-                                'y': meta.get('y', 0),
-                                'w': meta.get('w', 100),
-                                'h': meta.get('h', 100)
+                                'top': meta.get('top', 0),
+                                'right': meta.get('right', 100),
+                                'bottom': meta.get('bottom', 100),
+                                'left': meta.get('left', 0)
                             }
-
-                            if filter_emotion != "All" and emotion.lower() != filter_emotion.lower():
-                                continue
-                            if filter_gender != "All" and gender.lower() != filter_gender.lower():
-                                continue
-                            if not (age_range[0] <= age <= age_range[1]):
-                                continue
 
                             confidence = max(0.0, min(100.0, (1 - dist) * 100))
                             
                             if file_name not in matched_records or confidence > matched_records[file_name]["confidence"]:
                                 matched_records[file_name] = {
                                     "confidence": confidence,
-                                    "age": age,
-                                    "gender": gender,
-                                    "emotion": emotion,
                                     "facial_area": facial_area
                                 }
 
@@ -349,13 +258,6 @@ with tab1:
             except Exception as e:
                 st.error(f"Detection pipeline failure: {str(e)}")
                 st.stop()
-                
-            finally:
-                if os.path.exists(temp_target):
-                    os.remove(temp_target)
-
-        if "profile_attr" in st.session_state:
-            st.info(st.session_state["profile_attr"])
 
         matched_records = st.session_state.get("last_search_results", {})
 
@@ -392,17 +294,6 @@ with tab1:
                         with crop_col:
                             st.write("**Extracted Target Region**")
                             st.image(cropped_face_pil, width=140)
-                            st.markdown(
-                                f"""
-                                <div style="margin-top: 8px;">
-                                    <span class="meta-tag">Age: {rec['age']}</span>
-                                    <span class="meta-tag">Gender: {rec['gender']}</span>
-                                    <span class="meta-tag">Emotion: {rec['emotion']}</span>
-                                </div>
-                                """, 
-                                unsafe_allow_html=True
-                            )
-                            st.write("")
                             st.progress(int(rec["confidence"]) / 100)
                             st.caption(f"Match Similarity: {rec['confidence']:.1f}%")
 
