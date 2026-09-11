@@ -199,7 +199,7 @@ with tab1:
             st.subheader("Reference Input")
             
             if "captured_image_bytes" in st.session_state and st.session_state["captured_image_bytes"] is not None:
-                st.image(st.session_state["captured_image_bytes"], caption="Active Captured Reference", use_column_width=True)
+                st.image(st.session_state["captured_image_bytes"], caption="Active Captured Reference", use_container_width=True)
                 if st.button("Take New Photo", use_container_width=True):
                     st.session_state["captured_image_bytes"] = None
                     st.rerun()
@@ -301,7 +301,7 @@ with tab1:
                         img_col, crop_col = st.columns([2.5, 1], gap="medium")
 
                         with img_col:
-                            st.image(annotated_pil, caption=f"File: {file_name}", use_column_width=True)
+                            st.image(annotated_pil, caption=f"File: {file_name}", use_container_width=True)
 
                         with crop_col:
                             st.write("**Extracted Target Region**")
@@ -397,6 +397,6 @@ with tab2:
                         for idx, fname in enumerate(unique_filenames):
                             with cols[idx % 4]:
                                 if fname in file_dict:
-                                    st.image(file_dict[fname], caption=fname, use_column_width=True)
+                                    st.image(file_dict[fname], caption=fname, use_container_width=True)
                                 else:
                                     st.write(f"File: {fname}")
