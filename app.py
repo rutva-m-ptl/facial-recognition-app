@@ -8,15 +8,13 @@ import chromadb
 import cv2
 from PIL import Image
 from sklearn.cluster import DBSCAN, KMeans
+from deepface import DeepFace
 
 # --- Page Configuration ---
 st.set_page_config(
     page_title="Facial Recognition & Enterprise Analytics",
     layout="wide"
 )
-
-# --- Initialize OpenCV Haar Cascade Classifier ---
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 # --- Initialize ChromaDB in Writable Temporary Directory ---
 CHROMA_DATA_PATH = os.path.join(tempfile.gettempdir(), "chroma_db")
@@ -28,7 +26,7 @@ chroma_client = get_chroma_client()
 
 def get_collection():
     return chroma_client.get_or_create_collection(
-        name="gallery_faces_analytics",
+        name="gallery_faces_deepface",
         metadata={"hnsw:space": "cosine"}
     )
 
@@ -81,34 +79,39 @@ uploaded_files = st.sidebar.file_uploader(
 
 threshold = st.sidebar.slider("Match Distance Threshold", 0.10, 0.80, 0.40, 0.05)
 
-# --- Feature Extractor Engine ---
+# --- Deep Learning Feature Extractor ---
 def convert_to_rgb(img_file):
     return Image.open(img_file).convert("RGB")
 
 def extract_face_embedding_and_bbox(img_np):
-    """Detects faces using OpenCV Haar Cascades and extracts normalized feature vectors."""
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    faces = face_cascade.detectMultiScale(
-        gray, 
-        scaleFactor=1.1, 
-        minNeighbors=5, 
-        minSize=(30, 30)
-    )
-
+    """Extracts deep facial embeddings using DeepFace (Facenet)."""
     extracted_faces = []
-    for (x, y, w, h) in faces:
-        face_crop = gray[y:y+h, x:x+w]
-        if face_crop.size == 0:
-            continue
+    try:
+        # Detect faces and extract embeddings using DeepFace
+        results = DeepFace.represent(
+            img_path=img_np,
+            model_name="Facenet",
+            detector_backend="opencv",
+            enforce_detection=False
+        )
 
-        resized = cv2.resize(face_crop, (32, 32))
-        embedding = resized.flatten().astype(np.float32)
-        embedding /= (np.linalg.norm(embedding) + 1e-6)
-
-        extracted_faces.append({
-            "embedding": embedding.tolist(),
-            "bbox": {"top": int(y), "right": int(x + w), "bottom": int(y + h), "left": int(x)}
-        })
+        for res in results:
+            embedding = res["embedding"]
+            facial_area = res["facial_area"]
+            
+            # Filter out empty or tiny detections
+            if facial_area["w"] > 20 and facial_area["h"] > 20:
+                extracted_faces.append({
+                    "embedding": embedding,
+                    "bbox": {
+                        "top": int(facial_area["y"]),
+                        "right": int(facial_area["x"] + facial_area["w"]),
+                        "bottom": int(facial_area["y"] + facial_area["h"]),
+                        "left": int(facial_area["x"])
+                    }
+                })
+    except Exception as e:
+        pass
 
     return extracted_faces
 
@@ -176,7 +179,7 @@ if uploaded_files:
                         )
                         indexed_count += 1
                     except Exception as inner_e:
-                        chroma_client.delete_collection("gallery_faces_analytics")
+                        chroma_client.delete_collection("gallery_faces_deepface")
                         collection = get_collection()
                         collection.upsert(
                             ids=[unique_id],
@@ -206,7 +209,7 @@ st.sidebar.info(f"Database Index Records: {db_count}")
 
 if st.sidebar.button("Reset Vector Database", use_container_width=True):
     try:
-        chroma_client.delete_collection("gallery_faces_analytics")
+        chroma_client.delete_collection("gallery_faces_deepface")
     except Exception:
         pass
     st.sidebar.warning("Database records cleared.")

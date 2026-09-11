@@ -1,6 +1,7 @@
 streamlit
+chromadb
 opencv-python-headless
 pillow
-numpy<2.0.0
 scikit-learn
-chromadb
+deepface
+tf-keras
